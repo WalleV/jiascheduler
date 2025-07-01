@@ -8,7 +8,7 @@ on:
 
 env:
   DOCKER_USERNAME: iwannay
-  IMAGE_NAME: iwannay/jiascheduler
+  IMAGE_NAME: coolcoffee/jiascheduler
 
 jobs:
   build-frontend:
