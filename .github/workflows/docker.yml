@@ -7,7 +7,7 @@ on:
       - "*"
 
 env:
-  DOCKER_USERNAME: iwannay
+  DOCKER_USERNAME: coolcoffee
   IMAGE_NAME: coolcoffee/jiascheduler
 
 jobs:
