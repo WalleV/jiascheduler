@@ -1,4 +1,7 @@
-use std::time::Duration;
+use std::{
+    num::{NonZeroI32, NonZeroU64},
+    time::Duration,
+};
 
 use crate::{
     api_response, default_local_time,
@@ -7,14 +10,16 @@ use crate::{
     local_time,
     logic::{self, job::types::BundleScriptRecord},
     middleware,
-    response::{std_into_error, ApiStdResponse},
+    response::std_into_error,
     return_err, return_ok, AppState,
 };
 
-use service::IdGenerator;
+use service::{logic::types::CustomTimerExpr, IdGenerator};
 
+use super::types;
+use crate::api::types::CompletedCallbackOpts;
 use automate::{scheduler::types::ScheduleType, JobAction};
-use poem::{session::Session, web::Data, Endpoint, EndpointExt, Result};
+use poem::{session::Session, web::Data, Endpoint, EndpointExt};
 use poem_openapi::{
     param::{Header, Query},
     payload::Json,
@@ -22,624 +27,6 @@ use poem_openapi::{
 };
 use sea_orm::{ActiveValue::NotSet, Set};
 use serde_json::json;
-use types::CompletedCallbackOpts;
-mod types {
-    use std::collections::HashMap;
-
-    use automate::scheduler::types;
-    use poem_openapi::{Enum, Object};
-
-    use serde::Serialize;
-    use serde_json::Value;
-
-    use crate::logic;
-
-    #[derive(Object, Serialize, Default)]
-    pub struct SaveJobResp {
-        pub result: u64,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    #[oai(skip_serializing_if_is_none)]
-    pub struct SaveJobReq {
-        pub id: Option<u64>,
-        pub eid: Option<String>,
-        pub executor_id: u64,
-        #[oai(validator(min_length = 1, max_length = 50))]
-        pub name: String,
-        pub work_user: Option<String>,
-        pub work_dir: Option<String>,
-        pub timeout: Option<u64>,
-        pub max_retry: Option<u8>,
-        pub max_parallel: Option<u8>,
-        pub code: Option<String>,
-        pub info: Option<String>,
-        pub bundle_script: Option<Vec<BundleScript>>,
-        pub upload_file: Option<String>,
-        #[oai(default)]
-        pub is_public: Option<bool>,
-        pub display_on_dashboard: Option<bool>,
-        pub args: Option<HashMap<String, String>>,
-        pub completed_callback: Option<CompletedCallbackOpts>,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct CompletedCallbackOpts {
-        pub trigger_on: CompletedCallbackTriggerType,
-        pub url: String,
-        pub header: Option<HashMap<String, String>>,
-        pub enable: bool,
-    }
-
-    impl From<logic::types::CompletedCallbackOpts> for CompletedCallbackOpts {
-        fn from(value: logic::types::CompletedCallbackOpts) -> Self {
-            let trigger_on = match value.trigger_on {
-                logic::types::CompletedCallbackTriggerType::All => {
-                    CompletedCallbackTriggerType::All
-                }
-                logic::types::CompletedCallbackTriggerType::Error => {
-                    CompletedCallbackTriggerType::Error
-                }
-            };
-            Self {
-                trigger_on,
-                url: value.url,
-                header: value.header,
-                enable: value.enable,
-            }
-        }
-    }
-
-    impl Into<logic::types::CompletedCallbackOpts> for CompletedCallbackOpts {
-        fn into(self) -> logic::types::CompletedCallbackOpts {
-            let trigger_on = match self.trigger_on {
-                CompletedCallbackTriggerType::All => {
-                    logic::types::CompletedCallbackTriggerType::All
-                }
-                CompletedCallbackTriggerType::Error => {
-                    logic::types::CompletedCallbackTriggerType::Error
-                }
-            };
-            logic::types::CompletedCallbackOpts {
-                trigger_on,
-                url: self.url,
-                header: self.header,
-                enable: self.enable,
-            }
-        }
-    }
-
-    #[derive(Enum, Serialize, Default)]
-    pub enum CompletedCallbackTriggerType {
-        #[default]
-        #[oai(rename = "all")]
-        All,
-        #[oai(rename = "error")]
-        Error,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct BundleScript {
-        pub eid: String,
-        pub name: String,
-        pub info: String,
-        pub executor_id: u64,
-        pub code: String,
-        pub cond_expr: String,
-    }
-
-    pub fn default_page() -> u64 {
-        1
-    }
-
-    pub fn default_page_size() -> u64 {
-        20
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct QueryJobResp {
-        pub total: u64,
-        pub list: Vec<JobRecord>,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct JobRecord {
-        pub id: u64,
-        pub eid: String,
-        pub executor_id: u64,
-        pub executor_name: String,
-        pub executor_platform: String,
-        pub name: String,
-        pub code: String,
-        pub info: String,
-        pub is_public: bool,
-        pub job_type: String,
-        pub team_name: Option<String>,
-        pub team_id: Option<u64>,
-        pub bundle_script: Option<Value>,
-        pub tags: Option<Vec<JobTag>>,
-        pub display_on_dashboard: bool,
-        pub work_dir: String,
-        pub work_user: String,
-        pub timeout: u64,
-        pub max_retry: u8,
-        pub max_parallel: u8,
-        pub created_user: String,
-        pub updated_user: String,
-        pub upload_file: String,
-        pub args: Option<Value>,
-        pub completed_callback: Option<CompletedCallbackOpts>,
-        pub created_time: String,
-        pub updated_time: String,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct JobTag {
-        pub id: u64,
-        pub tag_name: String,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct RunRecord {
-        pub id: u64,
-        pub executor_id: u64,
-        pub executor_name: String,
-        pub team_id: Option<u64>,
-        pub team_name: Option<String>,
-        pub instance_id: String,
-        pub is_online: bool,
-        pub bind_ip: String,
-        pub bind_namespace: String,
-        pub schedule_type: String,
-        pub job_type: String,
-        pub eid: String,
-        pub schedule_id: String,
-        pub schedule_snapshot_data: Option<serde_json::Value>,
-        pub schedule_name: Option<String>,
-        pub schedule_status: String,
-        pub run_status: String,
-        pub exit_status: String,
-        pub exit_code: i32,
-        pub dispatch_result: Option<serde_json::Value>,
-        pub dispatch_data: Option<serde_json::Value>,
-        pub tags: Option<Vec<JobTag>>,
-        pub start_time: String,
-        pub end_time: String,
-        pub next_time: String,
-        pub prev_time: String,
-        pub updated_user: String,
-        pub updated_time: String,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct QueryRunResp {
-        pub total: u64,
-        pub list: Vec<RunRecord>,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct Endpoint {
-        pub instance_id: String,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct DispatchJobReq {
-        pub schedule_name: String,
-        pub schedule_type: String,
-        pub endpoints: Vec<Endpoint>,
-        pub eid: String,
-        pub timer_expr: Option<TimerExpr>,
-        pub restart_interval: Option<u64>,
-        pub is_sync: bool,
-        pub action: String,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct DispatchJobResp {
-        pub result: u64,
-    }
-
-    pub type RedispatchJobResp = Vec<DispatchJobResult>;
-
-    #[derive(Object, Serialize, Default)]
-    pub struct DispatchJobResult {
-        pub namespace: String,
-        pub ip: String,
-        pub response: serde_json::Value,
-        pub has_err: bool,
-        pub call_err: Option<String>,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct RedispatchJobReq {
-        pub schedule_id: String,
-        pub action: String,
-    }
-    #[derive(Object, Serialize, Default)]
-    pub struct DeleteJobReq {
-        pub eid: String,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct DeleteJobResp {
-        pub result: u64,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct ScheduleRecord {
-        pub id: u64,
-        pub schedule_id: String,
-        pub team_id: Option<u64>,
-        pub team_name: Option<String>,
-        pub name: String,
-        pub eid: String,
-        pub job_type: String,
-        pub dispatch_result: Option<Value>,
-        pub schedule_type: String,
-        pub action: String,
-        pub dispatch_data: Option<Value>,
-        pub snapshot_data: Option<Value>,
-        pub tags: Option<Vec<JobTag>>,
-        pub created_user: String,
-        pub updated_user: String,
-        pub created_time: String,
-        pub updated_time: String,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct QueryScheduleResp {
-        pub total: u64,
-        pub list: Vec<ScheduleRecord>,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct ExecRecord {
-        pub id: u64,
-        pub job_name: String,
-        pub schedule_id: String,
-        pub bind_ip: String,
-        pub is_online: bool,
-        pub job_type: String,
-        pub team_id: Option<u64>,
-        pub team_name: Option<String>,
-        pub bundle_script_result: Option<serde_json::Value>,
-        pub exit_status: String,
-        pub exit_code: i64,
-        pub start_time: Option<String>,
-        pub end_time: Option<String>,
-        pub tags: Option<Vec<JobTag>>,
-        pub output: String,
-        pub created_user: String,
-        pub created_time: String,
-        pub updated_time: String,
-        pub schedule_name: String,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct QueryExecResp {
-        pub total: u64,
-        pub list: Vec<ExecRecord>,
-    }
-
-    #[derive(Serialize, Default, Enum)]
-    pub enum JobAction {
-        #[default]
-        #[oai(rename = "exec")]
-        Exec,
-        #[oai(rename = "kill")]
-        Kill,
-        #[oai(rename = "start_timer")]
-        StartTimer,
-        #[oai(rename = "stop_timer")]
-        StopTimer,
-        #[oai(rename = "start_supervising")]
-        StartSupervising,
-        #[oai(rename = "stop_supervising")]
-        StopSupervising,
-    }
-
-    impl Into<types::JobAction> for JobAction {
-        fn into(self) -> types::JobAction {
-            match self {
-                JobAction::Exec => types::JobAction::Exec,
-                JobAction::Kill => types::JobAction::Kill,
-                JobAction::StartTimer => types::JobAction::StartTimer,
-                JobAction::StopTimer => types::JobAction::StopTimer,
-                JobAction::StartSupervising => types::JobAction::StartSupervising,
-                JobAction::StopSupervising => types::JobAction::StopSupervising,
-            }
-        }
-    }
-
-    #[test]
-    fn test() {
-        let m = JobAction::Exec;
-        let s = serde_json::to_string(&m).unwrap();
-        println!("{}", s);
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct ActionReq {
-        pub action: JobAction,
-        pub instance_id: String,
-        pub schedule_id: String,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct ActionRes {
-        pub result: Value,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    #[oai(skip_serializing_if_is_none)]
-    pub struct SaveJobBundleScriptReq {
-        pub id: Option<u64>,
-        pub eid: Option<String>,
-        pub executor_id: u64,
-        #[oai(validator(min_length = 1))]
-        pub name: String,
-        pub code: String,
-        pub info: String,
-        pub args: Option<HashMap<String, String>>,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct SaveJobBundleScriptResp {
-        pub result: u64,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct DeleteJobBundleScriptReq {
-        pub eid: String,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct JobBundleScriptRecord {
-        pub id: u64,
-        pub eid: String,
-        pub executor_id: u64,
-        pub executor_name: String,
-        pub team_id: Option<u64>,
-        pub team_name: Option<String>,
-        pub name: String,
-        pub code: String,
-        pub info: String,
-        pub created_user: String,
-        pub updated_user: String,
-        pub args: Option<Value>,
-        pub created_time: String,
-        pub updated_time: String,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct QueryJobBundleScriptResp {
-        pub total: u64,
-        pub list: Vec<JobBundleScriptRecord>,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct JobTimerRecord {
-        pub id: u64,
-        pub eid: String,
-        pub name: String,
-        pub team_id: Option<u64>,
-        pub team_name: Option<String>,
-        pub job_name: String,
-        pub job_type: String,
-        pub executor_id: u64,
-        pub executor_name: String,
-        pub executor_platform: String,
-        pub timer_expr: serde_json::Value,
-        pub info: String,
-        pub tags: Option<Vec<JobTag>>,
-        pub created_user: String,
-        pub updated_user: String,
-        pub created_time: String,
-        pub updated_time: String,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct QueryJobTimerResp {
-        pub total: u64,
-        pub list: Vec<JobTimerRecord>,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    #[oai(skip_serializing_if_is_none)]
-    pub struct SaveJobTimerReq {
-        pub id: Option<u64>,
-        pub eid: String,
-        pub job_type: String,
-        #[oai(validator(min_length = 1, max_length = 50))]
-        pub name: String,
-        pub timer_expr: TimerExpr,
-        pub info: String,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct TimerExpr {
-        pub second: String,
-        pub minute: String,
-        pub hour: String,
-        pub day_of_month: String,
-        pub month: String,
-        pub year: String,
-    }
-
-    impl From<String> for TimerExpr {
-        fn from(value: String) -> Self {
-            let vec: Vec<&str> = value.split(" ").collect();
-            Self {
-                second: vec.get(0).map_or("1".to_string(), |&v| v.to_string()),
-                minute: vec.get(1).map_or("1".to_string(), |&v| v.to_string()),
-                hour: vec.get(2).map_or("1".to_string(), |&v| v.to_string()),
-                day_of_month: vec.get(3).map_or("1".to_string(), |&v| v.to_string()),
-                month: vec.get(4).map_or("1".to_string(), |&v| v.to_string()),
-                year: vec.get(5).map_or("1".to_string(), |&v| v.to_string()),
-            }
-        }
-    }
-
-    impl Into<String> for TimerExpr {
-        fn into(self) -> String {
-            format!(
-                "{} {} {} {} {} {}",
-                self.second, self.minute, self.hour, self.day_of_month, self.month, self.year
-            )
-        }
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct SaveJobTimerResp {
-        pub result: u64,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct GetDashboardReq {
-        // pub eid: String,
-        pub job_type: String,
-        pub filter_schedule_history: Vec<FilterScheduleHistoryRule>,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct FilterScheduleHistoryRule {
-        eid: String,
-        schedule_id: String,
-    }
-    #[derive(Object, Serialize, Default)]
-    pub struct GetDashboardResp {
-        pub job_num: u64,
-        pub running_num: u64,
-        pub exec_succ_num: u64,
-        pub exec_fail_num: u64,
-        pub rows: Vec<JobRunResultStats>,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct JobRunResultStats {
-        pub name: String,
-        pub eid: String,
-        pub schedule_name: String,
-        pub results: Vec<JobRunSummary>,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct JobRunSummary {
-        pub eid: String,
-        pub total: i64,
-        pub name: String,
-        pub info: String,
-        pub last_start_time: String,
-        pub exec_succ_num: i64,
-        pub exec_fail_num: i64,
-        pub check_succ_num: i64,
-        pub check_fail_num: i64,
-        pub eval_fail_num: i64,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct JobSupervisorRecord {
-        pub id: u64,
-        pub name: String,
-        pub job_name: String,
-        pub eid: String,
-        pub executor_id: u64,
-        pub executor_name: String,
-        pub executor_platform: String,
-        pub team_id: Option<u64>,
-        pub team_name: Option<String>,
-        pub restart_interval: u64,
-        pub info: String,
-        pub tags: Option<Vec<JobTag>>,
-        pub created_user: String,
-        pub updated_user: String,
-        pub created_time: String,
-        pub updated_time: String,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct QueryJobSupervisorResp {
-        pub total: u64,
-        pub list: Vec<JobSupervisorRecord>,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    #[oai(skip_serializing_if_is_none)]
-    pub struct SaveJobSupervisorReq {
-        pub id: Option<u64>,
-        pub eid: String,
-        pub restart_interval: u64,
-        #[oai(validator(min_length = 1, max_length = 50))]
-        pub name: String,
-        #[oai(validator(min_length = 0, max_length = 500))]
-        pub info: String,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct SaveJobSupervisorResp {
-        pub result: u64,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct DeleteExecHistoryReq {
-        pub eid: Option<String>,
-        pub schedule_id: Option<String>,
-        pub schedule_type: Option<String>,
-        pub ids: Option<Vec<u64>>,
-        pub instance_id: Option<String>,
-        pub time_range_start: Option<String>,
-        pub time_range_end: Option<String>,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct DeleteExecHistoryResp {
-        pub result: u64,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct DeleteRunStatusReq {
-        pub eid: String,
-        pub instance_id: String,
-        pub schedule_type: String,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct DeleteRunStatusResp {
-        pub result: u64,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct DeleteScheduleHistoryReq {
-        pub eid: String,
-        pub schedule_id: String,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct DeleteScheduleHistoryResp {
-        pub result: u64,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct DeleteJobSupervisorReq {
-        pub id: u64,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct DeleteJobSupervisorResp {
-        pub result: u64,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct DeleteJobTimerReq {
-        pub id: u64,
-    }
-
-    #[derive(Object, Serialize, Default)]
-    pub struct DeleteJobTimerResp {
-        pub result: u64,
-    }
-}
-
 fn set_middleware(ep: impl Endpoint) -> impl Endpoint {
     ep.with(middleware::TeamPermissionMiddleware)
 }
@@ -656,11 +43,12 @@ impl JobApi {
         #[oai(name = "X-Team-Id")] Header(team_id): Header<Option<u64>>,
         user_info: Data<&logic::types::UserInfo>,
         Json(req): Json<types::SaveJobReq>,
-    ) -> Result<ApiStdResponse<types::SaveJobResp>> {
+    ) -> api_response!(types::SaveJobResp) {
         let ok = state.is_change_forbid(&user_info.user_id).await?;
         if ok {
             return Err(NoPermission().into());
         }
+
         let svc = state.service();
 
         if !svc
@@ -671,11 +59,14 @@ impl JobApi {
             return Err(NoPermission().into());
         }
 
-        let args = req
-            .args
-            .map(|v| serde_json::to_value(&v))
-            .transpose()
-            .map_err(std_into_error)?;
+        let args: Vec<logic::job::types::JobFormalArg> =
+            req.args.into_iter().map(|v| v.into()).collect();
+
+        let args = if args.len() > 0 {
+            Set(Some(serde_json::to_value(args).map_err(std_into_error)?))
+        } else {
+            NotSet
+        };
 
         let completed_callback = if let Some(v) = req.completed_callback {
             let data: logic::types::CompletedCallbackOpts = v.into();
@@ -739,7 +130,7 @@ impl JobApi {
                 display_on_dashboard: Set(req.display_on_dashboard.unwrap_or(false)),
                 created_user,
                 updated_user: Set(user_info.username.clone()),
-                args: Set(args),
+                args: args,
                 team_id: team_id.map_or(NotSet, |v| Set(v)),
                 completed_callback,
                 ..Default::default()
@@ -775,14 +166,14 @@ impl JobApi {
             validator(maximum(value = "10000"))
         )]
         Query(page_size): Query<u64>,
-    ) -> Result<ApiStdResponse<types::QueryJobResp>> {
+    ) -> api_response!(types::QueryJobResp) {
         let svc = state.service();
         let updated_time_range = updated_time_range.map(|v| (v[0].clone(), v[1].clone()));
         let default_eid = default_eid.filter(|v| v != "");
 
         let team_id = svc
             .job
-            .get_default_validate_team_id_by_job(&user_info, default_eid.as_deref(), team_id)
+            .get_validate_team_id_by_job_or_default(&user_info, default_eid.as_deref(), team_id)
             .await?;
 
         let search_username = if state.can_manage_job(&user_info.user_id).await? {
@@ -795,7 +186,7 @@ impl JobApi {
             .job
             .query_job(
                 search_username,
-                job_type.filter(|v| v != ""),
+                job_type.clone().filter(|v| v != ""),
                 name.filter(|v| v != ""),
                 updated_time_range,
                 default_id,
@@ -809,7 +200,13 @@ impl JobApi {
 
         let tag_records = svc
             .tag
-            .get_all_tag_bind_by_job_ids(ret.0.iter().map(|v| v.id).collect())
+            .get_all_tag_bind_by_resource_ids(
+                ret.0.iter().map(|v| v.id).collect(),
+                match job_type.as_ref() {
+                    Some(v) if v == "bundle" => logic::types::ResourceType::BundleJob,
+                    _ => logic::types::ResourceType::Job,
+                },
+            )
             .await?;
 
         let list: Vec<types::JobRecord> = ret
@@ -898,7 +295,7 @@ impl JobApi {
         #[oai(name = "X-Team-Id")] Header(team_id): Header<Option<u64>>,
         Json(req): Json<types::DispatchJobReq>,
         user_info: Data<&logic::types::UserInfo>,
-    ) -> Result<ApiStdResponse<types::DispatchJobResp>> {
+    ) -> api_response!(types::DispatchJobResp) {
         let svc = state.service();
         let action = req.action.as_str().try_into()?;
         let schedule_type = req.schedule_type.as_str().try_into()?;
@@ -924,10 +321,84 @@ impl JobApi {
                 action,
                 req.timer_expr.map(|v| v.into()),
                 req.restart_interval.map(|v| Duration::from_secs(v)),
+                req.args,
                 user_info.username.clone(),
             )
             .await?;
         return_ok!(types::DispatchJobResp { result: ret })
+    }
+
+    #[oai(path = "/schedule", method = "post", transform = "set_middleware")]
+    pub async fn schedule(
+        &self,
+        state: Data<&AppState>,
+        user_info: Data<&logic::types::UserInfo>,
+        #[oai(name = "X-Team-Id")] Header(team_id): Header<Option<u64>>,
+        Json(req): Json<types::ScheduleJobReq>,
+    ) -> api_response!(types::ScheduleJobResp) {
+        let svc = state.service();
+        let action = req.action.as_str().try_into()?;
+
+        let secret = state.conf.comet_secret.clone();
+
+        let schedule_record =
+            svc.job
+                .get_schedule(req.schedule_pid)
+                .await?
+                .ok_or(anyhow::anyhow!(
+                    "cannot found job schedule by schedule_pid: {}",
+                    req.schedule_pid
+                ))?;
+
+        let job_record: job::Model = serde_json::from_value(
+            schedule_record
+                .snapshot_data
+                .ok_or(anyhow::format_err!("cannot get snapshot_data"))?,
+        )
+        .map_err(|e| anyhow::format_err!("{e}"))?;
+
+        let timer_expr: Option<logic::types::CustomTimerExpr> = schedule_record
+            .timer_expr
+            .clone()
+            .map(|v| serde_json::from_value(v).map_err(|e| anyhow::format_err!("{e}")))
+            .transpose()?;
+
+        let schedule_type = schedule_record.schedule_type.as_str().try_into()?;
+
+        if !svc
+            .job
+            .can_dispatch_job(&user_info, team_id, None, &schedule_record.eid)
+            .await?
+        {
+            return Err(NoPermission().into());
+        }
+
+        let instances: Vec<String> = serde_json::from_value(
+            schedule_record
+                .instance_ids
+                .ok_or(anyhow::format_err!("instances is required"))?,
+        )
+        .map_err(std_into_error)?;
+
+        let ret = svc
+            .job
+            .schedule_job(
+                secret,
+                instances,
+                &job_record,
+                false,
+                schedule_record.name,
+                schedule_type,
+                action,
+                timer_expr,
+                NonZeroI32::new(schedule_record.restart_interval)
+                    .map(|v| Duration::from_secs(v.get() as u64)),
+                schedule_record.actual_args,
+                user_info.username.clone(),
+                NonZeroU64::new(schedule_record.id),
+            )
+            .await?;
+        return_ok!(types::ScheduleJobResp { result: ret })
     }
 
     #[oai(path = "/redispatch", method = "post", transform = "set_middleware")]
@@ -937,18 +408,18 @@ impl JobApi {
         user_info: Data<&logic::types::UserInfo>,
         #[oai(name = "X-Team-Id")] Header(team_id): Header<Option<u64>>,
         Json(req): Json<types::RedispatchJobReq>,
-    ) -> Result<ApiStdResponse<types::RedispatchJobResp>> {
+    ) -> api_response!(types::RedispatchJobResp) {
         let svc = state.service();
         let action: JobAction = req.action.as_str().try_into()?;
 
-        let schedule_record =
-            svc.job
-                .get_schedule(&req.schedule_id)
-                .await?
-                .ok_or(anyhow::anyhow!(
-                    "cannot found job schedule by schedule_id: {}",
-                    req.schedule_id
-                ))?;
+        let schedule_record = svc
+            .job
+            .get_schedule_history(&req.schedule_id)
+            .await?
+            .ok_or(anyhow::anyhow!(
+                "cannot found job schedule by schedule_id: {}",
+                req.schedule_id
+            ))?;
 
         if !svc
             .job
@@ -1025,7 +496,7 @@ impl JobApi {
             validator(maximum(value = "10000"))
         )]
         Query(page_size): Query<u64>,
-    ) -> Result<ApiStdResponse<types::QueryRunResp>> {
+    ) -> api_response!(types::QueryRunResp) {
         let svc = state.service();
         let updated_time_range = updated_time_range.map(|v| (v[0].clone(), v[1].clone()));
         let search_username = if state.can_manage_job(&user_info.user_id).await? {
@@ -1041,7 +512,7 @@ impl JobApi {
                 team_id,
                 schedule_name.filter(|v| v != ""),
                 Some(schedule_type),
-                Some(job_type),
+                Some(job_type.clone()),
                 updated_time_range,
                 tag_ids,
                 page - 1,
@@ -1051,7 +522,14 @@ impl JobApi {
 
         let tag_records = svc
             .tag
-            .get_all_tag_bind_by_job_ids(ret.0.iter().map(|v| v.job_id).collect())
+            .get_all_tag_bind_by_resource_ids(
+                ret.0.iter().map(|v| v.job_id).collect(),
+                if job_type == "bundle" {
+                    logic::types::ResourceType::BundleJob
+                } else {
+                    logic::types::ResourceType::Job
+                },
+            )
             .await?;
 
         let list: Vec<types::RunRecord> = ret
@@ -1115,6 +593,175 @@ impl JobApi {
         })
     }
 
+    #[oai(
+        path = "/schedule-history-list",
+        method = "get",
+        transform = "set_middleware"
+    )]
+    pub async fn query_schedule_history(
+        &self,
+        state: Data<&AppState>,
+        _session: &Session,
+        user_info: Data<&logic::types::UserInfo>,
+        Query(search_username): Query<Option<String>>,
+        #[oai(validator(
+            custom = "super::OneOfValidator::new(vec![\"once\",\"timer\",\"flow\",\"daemon\"])"
+        ))]
+        Query(schedule_type): Query<Option<String>>,
+        /// Search based on time range
+        #[oai(validator(max_items = 2, min_items = 2))]
+        Query(updated_time_range): Query<Option<Vec<String>>>,
+
+        #[oai(default)] Query(name): Query<Option<String>>,
+        #[oai(default)] Query(job_type): Query<String>,
+        Query(tag_ids): Query<Option<Vec<u64>>>,
+        #[oai(name = "X-Team-Id")] Header(team_id): Header<Option<u64>>,
+        #[oai(default = "types::default_page", validator(maximum(value = "10000")))]
+        Query(page): Query<u64>,
+        #[oai(
+            default = "types::default_page_size",
+            validator(maximum(value = "10000"))
+        )]
+        Query(page_size): Query<u64>,
+    ) -> api_response!(types::QueryScheduleHistoryResp) {
+        let svc = state.service();
+        let updated_time_range = updated_time_range.map(|v| (v[0].clone(), v[1].clone()));
+        let search_username = if state.can_manage_job(&user_info.user_id).await? {
+            search_username
+        } else {
+            team_id.map_or_else(|| Some(user_info.username.clone()), |_| search_username)
+        };
+        let ret = svc
+            .job
+            .query_schedule_history(
+                schedule_type,
+                search_username,
+                job_type.clone(),
+                name,
+                team_id,
+                updated_time_range,
+                tag_ids,
+                page - 1,
+                page_size,
+            )
+            .await?;
+
+        let tag_records = svc
+            .tag
+            .get_all_tag_bind_by_resource_ids(
+                ret.0.iter().map(|v| v.job_id).collect(),
+                if job_type == "bundle" {
+                    logic::types::ResourceType::BundleJob
+                } else {
+                    logic::types::ResourceType::Job
+                },
+            )
+            .await?;
+
+        let list: Vec<types::ScheduleHistoryRecord> = ret
+            .0
+            .into_iter()
+            .map(|v| types::ScheduleHistoryRecord {
+                id: v.id,
+                eid: v.eid,
+                created_user: v.created_user,
+                updated_user: v.updated_user,
+                team_id: v.team_id,
+                team_name: v.team_name,
+                created_time: local_time!(v.created_time),
+                updated_time: local_time!(v.updated_time),
+                schedule_type: v.schedule_type,
+                schedule_id: v.schedule_id,
+                name: v.name,
+                job_type: v.job_type,
+                dispatch_result: v.dispatch_result,
+                action: v.action,
+                actual_args: v.actual_args,
+                tags: Some(
+                    tag_records
+                        .iter()
+                        .filter_map(|tb| {
+                            if tb.resource_id == v.job_id {
+                                Some(types::JobTag {
+                                    id: tb.tag_id,
+                                    tag_name: tb.tag_name.clone(),
+                                })
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                ),
+                dispatch_data: v.dispatch_data,
+                snapshot_data: v.snapshot_data,
+            })
+            .collect();
+        return_ok!(types::QueryScheduleHistoryResp {
+            total: ret.1,
+            list: list,
+        })
+    }
+
+    #[oai(path = "/save-schedule", method = "post", transform = "set_middleware")]
+    pub async fn save_schedule(
+        &self,
+        state: Data<&AppState>,
+        _session: &Session,
+        #[oai(name = "X-Team-Id")] Header(team_id): Header<Option<u64>>,
+        user_info: Data<&logic::types::UserInfo>,
+        Json(req): Json<types::SaveScheduleReq>,
+    ) -> api_response!(types::SaveScheduleResp) {
+        let svc = state.service();
+
+        let schedule_record = svc.job.get_schedule(req.id).await?.ok_or(anyhow::anyhow!(
+            "cannot found job schedule by schedule_id: {}",
+            req.id
+        ))?;
+
+        if !svc
+            .job
+            .can_dispatch_job(
+                &user_info,
+                team_id,
+                Some(&schedule_record.created_user),
+                &schedule_record.eid,
+            )
+            .await?
+        {
+            return_err!(
+                "Rescheduling is not allowed unless you are the task's original scheduler."
+            );
+        }
+
+        let sched: Option<CustomTimerExpr> = req.timer_expr.map_or(None, |expr| Some(expr.into()));
+
+        let next_exec_times = match sched {
+            Some(ref v) => Some(utils::check_timer_expr(&v.timezone, &v.expr)?),
+            None => None,
+        };
+
+        let ret = svc
+            .job
+            .save_schedule(
+                req.id,
+                req.endpoints
+                    .iter()
+                    .map(|v| v.instance_id.clone())
+                    .collect(),
+                req.eid,
+                req.name,
+                sched,
+                req.args,
+                user_info.username.clone(),
+            )
+            .await?;
+
+        return_ok!(types::SaveScheduleResp {
+            result: ret,
+            next_exec_times
+        })
+    }
+
     #[oai(path = "/schedule-list", method = "get", transform = "set_middleware")]
     pub async fn query_schedule(
         &self,
@@ -1141,7 +788,7 @@ impl JobApi {
             validator(maximum(value = "10000"))
         )]
         Query(page_size): Query<u64>,
-    ) -> Result<ApiStdResponse<types::QueryScheduleResp>> {
+    ) -> api_response!(types::QueryScheduleResp) {
         let svc = state.service();
         let updated_time_range = updated_time_range.map(|v| (v[0].clone(), v[1].clone()));
         let search_username = if state.can_manage_job(&user_info.user_id).await? {
@@ -1154,7 +801,7 @@ impl JobApi {
             .query_schedule(
                 schedule_type,
                 search_username,
-                job_type,
+                job_type.clone(),
                 name,
                 team_id,
                 updated_time_range,
@@ -1166,7 +813,14 @@ impl JobApi {
 
         let tag_records = svc
             .tag
-            .get_all_tag_bind_by_job_ids(ret.0.iter().map(|v| v.job_id).collect())
+            .get_all_tag_bind_by_resource_ids(
+                ret.0.iter().map(|v| v.job_id).collect(),
+                if job_type == "bundle" {
+                    logic::types::ResourceType::BundleJob
+                } else {
+                    logic::types::ResourceType::Job
+                },
+            )
             .await?;
 
         let list: Vec<types::ScheduleRecord> = ret
@@ -1182,11 +836,14 @@ impl JobApi {
                 created_time: local_time!(v.created_time),
                 updated_time: local_time!(v.updated_time),
                 schedule_type: v.schedule_type,
-                schedule_id: v.schedule_id,
+                timer_expr: v.timer_expr,
+                action: v.action,
                 name: v.name,
                 job_type: v.job_type,
                 dispatch_result: v.dispatch_result,
-                action: v.action,
+                instance_ids: v
+                    .instance_ids
+                    .map_or(vec![], |v| serde_json::from_value(v).unwrap_or(vec![])),
                 tags: Some(
                     tag_records
                         .iter()
@@ -1202,7 +859,7 @@ impl JobApi {
                         })
                         .collect(),
                 ),
-                dispatch_data: v.dispatch_data,
+                actual_args: v.actual_args,
                 snapshot_data: v.snapshot_data,
             })
             .collect();
@@ -1231,6 +888,7 @@ impl JobApi {
             custom = "super::OneOfValidator::new(vec![\"once\",\"timer\",\"flow\",\"daemon\"])"
         ))]
         Query(schedule_type): Query<Option<String>>,
+        #[oai(default)] Query(schedule_pid): Query<Option<u64>>,
         #[oai(default)] Query(schedule_id): Query<Option<String>>,
         #[oai(default)] Query(eid): Query<Option<String>>,
 
@@ -1245,7 +903,7 @@ impl JobApi {
             validator(maximum(value = "10000"))
         )]
         Query(page_size): Query<u64>,
-    ) -> Result<ApiStdResponse<types::QueryExecResp>> {
+    ) -> api_response!(types::QueryExecResp) {
         let start_time_range = start_time_range.map(|v| (v[0].clone(), v[1].clone()));
         let svc = state.service();
 
@@ -1257,7 +915,8 @@ impl JobApi {
         let ret = svc
             .job
             .query_exec_history(
-                job_type,
+                job_type.clone(),
+                NonZeroU64::new(schedule_pid.unwrap_or_default()),
                 schedule_id.filter(|v| v != ""),
                 schedule_type,
                 team_id,
@@ -1276,7 +935,14 @@ impl JobApi {
 
         let tag_records = svc
             .tag
-            .get_all_tag_bind_by_job_ids(ret.0.iter().map(|v| v.job_id).collect())
+            .get_all_tag_bind_by_resource_ids(
+                ret.0.iter().map(|v| v.job_id).collect(),
+                if job_type == "bundle" {
+                    logic::types::ResourceType::BundleJob
+                } else {
+                    logic::types::ResourceType::Job
+                },
+            )
             .await?;
 
         let list: Vec<types::ExecRecord> = ret
@@ -1285,6 +951,7 @@ impl JobApi {
             .map(|v| types::ExecRecord {
                 id: v.id,
                 schedule_id: v.schedule_id,
+                schedule_pid: v.schedule_pid,
                 bind_ip: v.ip,
                 is_online: v.is_online,
                 exit_status: v.exit_status,
@@ -1366,6 +1033,36 @@ impl JobApi {
     }
 
     #[oai(
+        path = "/delete-schedule",
+        method = "post",
+        transform = "set_middleware"
+    )]
+    pub async fn delete_schedule(
+        &self,
+        state: Data<&AppState>,
+        user_info: Data<&logic::types::UserInfo>,
+        #[oai(name = "X-Team-Id")] Header(team_id): Header<Option<u64>>,
+        Json(req): Json<types::DeleteScheduleReq>,
+        _session: &Session,
+    ) -> api_response!(types::DeleteScheduleResp) {
+        let svc = state.service();
+        if !svc
+            .job
+            .can_write_schedule_by_pid(&user_info, team_id.clone(), Some(req.schedule_pid.clone()))
+            .await?
+        {
+            return_err!("no permission to delete this schedule");
+        }
+
+        let result = svc
+            .job
+            .delete_schedule(&user_info, &req.eid, req.schedule_pid)
+            .await?;
+
+        return_ok!(types::DeleteScheduleResp { result })
+    }
+
+    #[oai(
         path = "/delete-schedule-history",
         method = "post",
         transform = "set_middleware"
@@ -1418,6 +1115,7 @@ impl JobApi {
             .job
             .can_write_job(&user_info, team_id.clone(), None)
             .await?
+            || team_id.is_none_or(|v| v == 0)
         {
             Some(user_info.username.clone())
         } else {
@@ -1429,6 +1127,7 @@ impl JobApi {
             .delete_exec_history(
                 req.ids,
                 req.schedule_id,
+                req.schedule_pid.filter(|&v| v != 0),
                 schedule_type,
                 req.instance_id,
                 req.eid,
@@ -1450,7 +1149,7 @@ impl JobApi {
         _session: &Session,
         #[oai(name = "X-Team-Id")] Header(team_id): Header<Option<u64>>,
         Json(req): Json<types::ActionReq>,
-    ) -> Result<ApiStdResponse<types::ActionRes>> {
+    ) -> api_response!(types::ActionRes) {
         let svc = state.service();
         let action = req.action.into();
         let ret = svc
@@ -1479,7 +1178,7 @@ impl JobApi {
         user_info: Data<&logic::types::UserInfo>,
         #[oai(name = "X-Team-Id")] Header(team_id): Header<Option<u64>>,
         Json(req): Json<types::SaveJobBundleScriptReq>,
-    ) -> Result<ApiStdResponse<types::SaveJobBundleScriptResp>> {
+    ) -> api_response!(types::SaveJobBundleScriptResp) {
         let args = match req.args {
             Some(v) => Some(serde_json::to_value(&v).map_err(std_into_error)?),
             None => None,
@@ -1536,7 +1235,7 @@ impl JobApi {
         user_info: Data<&logic::types::UserInfo>,
         #[oai(name = "X-Team-Id")] Header(team_id): Header<Option<u64>>,
         Json(req): Json<types::DeleteJobBundleScriptReq>,
-    ) -> Result<ApiStdResponse<u64>> {
+    ) -> api_response!(u64) {
         let svc = state.service();
         if !svc
             .job
@@ -1575,7 +1274,7 @@ impl JobApi {
             validator(maximum(value = "10000"))
         )]
         Query(page_size): Query<u64>,
-    ) -> Result<ApiStdResponse<types::QueryJobBundleScriptResp>> {
+    ) -> api_response!(types::QueryJobBundleScriptResp) {
         let updated_time_range = updated_time_range.map(|v| (v[0].clone(), v[1].clone()));
         let svc = state.service();
         let default_eid = default_eid.filter(|v| v != "");
@@ -1656,7 +1355,7 @@ impl JobApi {
             validator(maximum(value = "10000"))
         )]
         Query(page_size): Query<u64>,
-    ) -> Result<ApiStdResponse<types::QueryJobTimerResp>> {
+    ) -> api_response!(types::QueryJobTimerResp) {
         let updated_time_range = updated_time_range.map(|v| (v[0].clone(), v[1].clone()));
         let svc = state.service();
 
@@ -1672,7 +1371,7 @@ impl JobApi {
                 team_id,
                 search_username,
                 name.filter(|v| v != ""),
-                job_type.filter(|v| v != ""),
+                job_type.clone().filter(|v| v != ""),
                 updated_time_range,
                 tag_ids,
                 page - 1,
@@ -1682,7 +1381,13 @@ impl JobApi {
 
         let tag_records = svc
             .tag
-            .get_all_tag_bind_by_job_ids(ret.0.iter().map(|v| v.job_id).collect())
+            .get_all_tag_bind_by_resource_ids(
+                ret.0.iter().map(|v| v.job_id).collect(),
+                match job_type.as_ref() {
+                    Some(v) if v == "bundle" => logic::types::ResourceType::BundleJob,
+                    _ => logic::types::ResourceType::Job,
+                },
+            )
             .await?;
 
         let list: Vec<types::JobTimerRecord> = ret
@@ -1693,6 +1398,7 @@ impl JobApi {
                 eid: v.eid,
                 name: v.name,
                 job_name: v.job_name,
+                job_args: v.job_args,
                 timer_expr: v.timer_expr.map_or(json!("null"), |v| v),
                 job_type: v.job_type,
                 info: v.info,
@@ -1736,7 +1442,7 @@ impl JobApi {
         user_info: Data<&logic::types::UserInfo>,
         #[oai(name = "X-Team-Id")] Header(team_id): Header<Option<u64>>,
         Json(req): Json<types::SaveJobTimerReq>,
-    ) -> Result<ApiStdResponse<types::SaveJobTimerResp>> {
+    ) -> api_response!(types::SaveJobTimerResp) {
         let svc = state.service();
 
         if !svc
@@ -1746,6 +1452,21 @@ impl JobApi {
         {
             return Err(NoPermission().into());
         }
+
+        let sched: logic::types::CustomTimerExpr = req.timer_expr.clone().into();
+
+        let next_exec_times = utils::check_timer_expr(&sched.timezone, &sched.expr)?;
+
+        let job_args: Vec<logic::job::types::JobFormalArg> =
+            req.job_args.into_iter().map(|v| v.into()).collect();
+
+        let job_args = if job_args.len() > 0 {
+            Set(Some(
+                serde_json::to_value(job_args).map_err(std_into_error)?,
+            ))
+        } else {
+            NotSet
+        };
 
         let ret = svc
             .job
@@ -1758,6 +1479,7 @@ impl JobApi {
                 )),
                 job_type: Set(req.job_type),
                 info: Set(req.info),
+                job_args,
                 created_user: req.id.map_or(Set(user_info.username.clone()), |_| NotSet),
                 updated_user: Set(user_info.username.clone()),
                 ..Default::default()
@@ -1765,7 +1487,8 @@ impl JobApi {
             .await?;
 
         return_ok!(types::SaveJobTimerResp {
-            result: ret.id.as_ref().to_owned()
+            result: ret.id.as_ref().to_owned(),
+            next_exec_times
         });
     }
 
@@ -1795,7 +1518,7 @@ impl JobApi {
         state: Data<&AppState>,
         user_info: Data<&logic::types::UserInfo>,
         Json(req): Json<types::GetDashboardReq>,
-    ) -> Result<ApiStdResponse<types::GetDashboardResp>> {
+    ) -> api_response!(types::GetDashboardResp) {
         let svc = state.service();
 
         let job_summary = svc.job.get_summary(&user_info).await?;
@@ -1864,7 +1587,7 @@ impl JobApi {
             validator(maximum(value = "10000"))
         )]
         Query(page_size): Query<u64>,
-    ) -> Result<ApiStdResponse<types::QueryJobSupervisorResp>> {
+    ) -> api_response!(types::QueryJobSupervisorResp) {
         let updated_time_range = updated_time_range.map(|v| (v[0].clone(), v[1].clone()));
         let svc = state.service();
         let search_username = if state.can_manage_job(&user_info.user_id).await? {
@@ -1888,7 +1611,10 @@ impl JobApi {
 
         let tag_records = svc
             .tag
-            .get_all_tag_bind_by_job_ids(ret.0.iter().map(|v| v.job_id).collect())
+            .get_all_tag_bind_by_resource_ids(
+                ret.0.iter().map(|v| v.job_id).collect(),
+                logic::types::ResourceType::Job,
+            )
             .await?;
 
         let list: Vec<types::JobSupervisorRecord> = ret
@@ -1905,6 +1631,7 @@ impl JobApi {
                 team_name: v.team_name,
                 created_user: v.created_user,
                 updated_user: v.updated_user,
+                job_args: v.job_args,
                 tags: Some(
                     tag_records
                         .iter()
@@ -1956,6 +1683,17 @@ impl JobApi {
             return Err(NoPermission().into());
         }
 
+        let job_args: Vec<logic::job::types::JobFormalArg> =
+            req.job_args.into_iter().map(|v| v.into()).collect();
+
+        let job_args = if job_args.len() > 0 {
+            Set(Some(
+                serde_json::to_value(job_args).map_err(std_into_error)?,
+            ))
+        } else {
+            NotSet
+        };
+
         let ret = svc
             .job
             .save_job_supervisor(job_supervisor::ActiveModel {
@@ -1969,6 +1707,7 @@ impl JobApi {
                         req.restart_interval
                     }
                 }),
+                job_args,
                 info: Set(req.info),
                 created_user: req.id.map_or(Set(user_info.username.clone()), |_| NotSet),
                 updated_user: Set(user_info.username.clone()),

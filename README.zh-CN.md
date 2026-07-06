@@ -43,7 +43,7 @@ jiascheduler 一共有四个执行程序，分别是
 
 1. jiascheduler-console: 控制台服务，用于提供 web 控制台服务
 2. jiascheduler-comet: 连接层服务，用于提供一个统一的接入层供 agent 连接
-3. jiascheduler-agent: 本地 agent 层序，用于执行作业
+3. jiascheduler-agent: 本地 agent 程序，用于执行作业
 4. jiascheduler: 以上三个服务的合并打包版本，用于单节点简易快速部署。
    需要注意的是，jiascheduler 打包服务也支持不同的 agent 接入。
    部署了 jiascheduler 合并版本, 你依旧可以再部署多个 comet 和 agent
@@ -60,38 +60,21 @@ jiascheduler 一共有四个执行程序，分别是
 
 ### docker 部署
 
-在 docker-compose.yml 同目录下创建.env 文件，内容如下
+jiascheduler-console参考配置[console.toml](console.toml)
 
-```shell
-WORKCONF=/data/jiascheduler
-WORKDATA=/data/jiascheduler
+多实例部署
+
+```
+docker compose -f docker-compose.yml up -d
 ```
 
-`console.toml` 在容器中默认路径为`/root/.jiascheduler/console.toml`，如果没有该配置文件，则访问 console 页面时会进入初始化安装页面
-
-如果存在 `console.toml` 文件，访问 console 页面则直接跳到登录页面，参考配置如下，将以下内容保存为 `console.toml`，放`$WORKCONF/.jiascheduler` 目录下
-
-```yml
-debug = false
-bind_addr = "0.0.0.0:9090"
-api_url = ""
-redis_url = "redis://default:3DGiuazc7wkAppV3@redis"
-comet_secret = "rYzBYE+cXbtdMg=="
-database_url = "mysql://root:kytHmeBR4Vg@mysql:3306/jiascheduler"
-
-[encrypt]
-private_key = "QGr0LLnFFt7mBFrfol2gy"
-
-[admin]
-username = "admin"
-password = "qTQhiMiLCb"
+单节点部署
+```
+docker compose -f docker-compose-standalone.yml up -d
 ```
 
-执行 docker compose up -d 后访问 0.0.0.0:9090 进入控制台界面
+访问 0.0.0.0:9090 进入控制台界面
 
-docker 参考配置如下
-
-[docker-compose.yml](docker-compose.yml)
 
 ## 软件截图
 

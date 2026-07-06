@@ -1,7 +1,9 @@
+use std::num::NonZeroU64;
+
 use crate::entity::{
     instance, job, job_exec_history, job_schedule_history, prelude::*, tag_resource, team,
 };
-use crate::logic::types::ResourceType;
+
 use anyhow::Result;
 use automate::scheduler::types::ScheduleType;
 use sea_orm::{
@@ -10,8 +12,8 @@ use sea_orm::{
 };
 use sea_query::Query;
 
-use super::types::ExecHistoryRelatedScheduleModel;
 use super::JobLogic;
+use super::types::ExecHistoryRelatedScheduleModel;
 
 impl<'a> JobLogic<'a> {
     pub async fn create_exec_history(&self) {}
@@ -19,6 +21,7 @@ impl<'a> JobLogic<'a> {
     pub async fn query_exec_history(
         &self,
         job_type: String,
+        schedule_pid: Option<NonZeroU64>,
         schedule_id: Option<String>,
         schedule_type: Option<String>,
         team_id: Option<u64>,
@@ -35,6 +38,7 @@ impl<'a> JobLogic<'a> {
     ) -> Result<(Vec<ExecHistoryRelatedScheduleModel>, u64)> {
         let mut select = JobExecHistory::find()
             .column_as(job_schedule_history::Column::Name, "schedule_name")
+            .column_as(job_schedule_history::Column::SchedulePid, "schedule_pid")
             .column_as(team::Column::Id, "team_id")
             .column_as(team::Column::Name, "team_name")
             .column_as(job::Column::Id, "job_id")
@@ -83,6 +87,9 @@ impl<'a> JobLogic<'a> {
             .apply_if(schedule_id, |query, v| {
                 query.filter(job_exec_history::Column::ScheduleId.eq(v))
             })
+            .apply_if(schedule_pid, |query, v| {
+                query.filter(job_schedule_history::Column::SchedulePid.eq(v.get()))
+            })
             .apply_if(bind_namespace, |query, v| {
                 query.filter(instance::Column::Namespace.contains(v))
             })
@@ -111,11 +118,7 @@ impl<'a> JobLogic<'a> {
                         job::Column::Id.in_subquery(
                             Query::select()
                                 .column(tag_resource::Column::ResourceId)
-                                .and_where(
-                                    tag_resource::Column::ResourceType
-                                        .eq(ResourceType::Job.to_string())
-                                        .and(tag_resource::Column::TagId.is_in(v)),
-                                )
+                                .and_where(tag_resource::Column::TagId.is_in(v))
                                 .from(TagResource)
                                 .to_owned(),
                         ),
@@ -141,6 +144,7 @@ impl<'a> JobLogic<'a> {
         &self,
         ids: Option<Vec<u64>>,
         schedule_id: Option<String>,
+        schedule_pid: Option<u64>,
         schedule_type: Option<ScheduleType>,
         instance_id: Option<String>,
         eid: Option<String>,
@@ -157,6 +161,17 @@ impl<'a> JobLogic<'a> {
                             .column(job_schedule_history::Column::ScheduleId)
                             .from(job_schedule_history::Entity)
                             .and_where(job_schedule_history::Column::ScheduleType.eq(v.to_string()))
+                            .to_owned(),
+                    ),
+                )
+            })
+            .apply_if(schedule_pid, |q, v| {
+                q.filter(
+                    job_exec_history::Column::ScheduleId.in_subquery(
+                        Query::select()
+                            .column(job_schedule_history::Column::ScheduleId)
+                            .from(job_schedule_history::Entity)
+                            .and_where(job_schedule_history::Column::SchedulePid.eq(v))
                             .to_owned(),
                     ),
                 )
